@@ -1,4 +1,5 @@
 #YPS - OfflinePasswordManager
+
 Một ứng dụng Quản lý Mật khẩu hoàn toàn ngoại tuyến (Offline-first) được xây dựng trên triết lý **Zero-Knowledge** (Không-Lưu-Vết). YPS giúp bạn quản lý hàng trăm tài khoản một cách an toàn mà chỉ cần nhớ duy nhất một Mật khẩu Chủ (Master Password). Toàn bộ dữ liệu được mã hóa bằng tiêu chuẩn quân đội và lưu trữ cục bộ trên máy tính của bạn, không có bất kỳ máy chủ hay kết nối Internet nào can thiệp.
 
 ## ✨ Tính năng nổi bật
