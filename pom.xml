@@ -40,6 +40,13 @@
             <version>2.11</version>
         </dependency>
 
+        <!-- Thư viện Shamir's Secret Sharing -->
+        <dependency>
+            <groupId>com.codahale</groupId>
+            <artifactId>shamir</artifactId>
+            <version>0.7.0</version>
+        </dependency>
+
         <!-- JUnit 5 cho Unit Test -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>

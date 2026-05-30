@@ -1,73 +1,57 @@
-#YPS - OfflinePasswordManager
+# Offline Password Manager
 
-Một ứng dụng Quản lý Mật khẩu hoàn toàn ngoại tuyến (Offline-first) được xây dựng trên triết lý **Zero-Knowledge** (Không-Lưu-Vết). YPS giúp bạn quản lý hàng trăm tài khoản một cách an toàn mà chỉ cần nhớ duy nhất một Mật khẩu Chủ (Master Password). Toàn bộ dữ liệu được mã hóa bằng tiêu chuẩn quân đội và lưu trữ cục bộ trên máy tính của bạn, không có bất kỳ máy chủ hay kết nối Internet nào can thiệp.
+Một ứng dụng quản lý mật khẩu ngoại tuyến (offline) mã nguồn mở được phát triển bằng **JavaFX**. Dự án này đặt trọng tâm cực kỳ lớn vào bảo mật dữ liệu, kết hợp các thuật toán mã hóa hiện đại và kiến trúc quản lý khóa hai tầng (DEK) chuyên nghiệp, cùng với tính năng khôi phục mật khẩu thông minh thông qua thuật toán Shamir's Secret Sharing.
 
-## ✨ Tính năng nổi bật
+## ✨ Các tính năng nổi bật
 
-### 🔒 Bảo mật Cấp độ Chuyên gia (Enterprise-Grade Security)
-*   **Mã hóa AES-256-GCM:** Sử dụng thuật toán mã hóa đối xứng mạnh nhất hiện nay kèm theo Authentication Tag để chống lại việc giả mạo hoặc chỉnh sửa file dữ liệu trái phép (Tamper-Proof).
-*   **Dẫn xuất khóa Argon2id:** Chống lại các cuộc tấn công Brute-force bằng phần cứng chuyên dụng (GPU/ASIC) thông qua cơ chế Memory-Hard Key Derivation.
-*   **Bảo vệ Bộ nhớ (Secure Memory Wiping):** Tích cực dọn dẹp RAM ngay sau khi sử dụng. Các biến chứa mật khẩu (`char[]`, `byte[]`) sẽ bị ghi đè bằng dữ liệu nhiễu ngẫu nhiên (Random bytes) và dọn về 0, ngăn chặn hoàn toàn các cuộc tấn công trích xuất bộ nhớ (Memory Dumping / Cold Boot Attacks).
-*   **Auto-Lock (Khóa tự động):** Tự động xóa khóa phiên (Session Key) và làm sạch RAM, đẩy người dùng về màn hình đăng nhập nếu không có tương tác chuột/phím sau một khoảng thời gian nhất định.
-*   **Ghi tệp an toàn (Atomic Safe Write):** Đảm bảo file `vault.json` không bao giờ bị hỏng (corrupted) ngay cả khi ứng dụng bị tắt đột ngột hay mất điện trong quá trình lưu dữ liệu.
+*   **Lưu trữ ngoại tuyến an toàn:** Toàn bộ dữ liệu được lưu cục bộ trên máy tính của bạn, không có bất kỳ kết nối đám mây hay máy chủ bên ngoài nào.
+*   **Kiến trúc DEK (Data Encryption Key):** Cho phép bạn thay đổi Master Password mà không cần giải mã và mã hóa lại toàn bộ kho mật khẩu.
+*   **Cơ chế khôi phục bằng Shamir's Secret Sharing (SSS):** Nếu bạn quên Master Password, hệ thống cho phép khôi phục lại mật khẩu bằng cách trả lời đúng $K$ trên tổng số $N$ câu hỏi bảo mật do bạn tự thiết lập.
+*   **Quản lý bộ nhớ an toàn (Memory Wiping):** Tự động xóa sạch các dữ liệu nhạy cảm (như Master Password, DEK, mật khẩu tài khoản) trên RAM ngay sau khi sử dụng xong để chống lại các mã độc quét RAM (RAM-scraping malware).
+*   **Giao diện JavaFX trực quan:** Hỗ trợ Setup dạng Wizard, Đăng nhập và Dashboard quản lý thân thiện.
 
-### 💻 Trải nghiệm Người dùng (UX)
-*   Giao diện Minimalist, hiện đại được thiết kế bằng **JavaFX**.
-*   Quản lý (Thêm/Sửa/Xóa) danh sách tài khoản dễ dàng qua Cửa sổ Pop-up (Modal).
-*   Tính năng **Copy to Clipboard** nhanh chóng chỉ với 1 click, không hiển thị mật khẩu dưới dạng bản rõ trên bảng dữ liệu để chống nhìn trộm (Shoulder Surfing).
+## 🔒 Tiêu chuẩn Bảo mật & Mật mã học
 
----
+Ứng dụng sử dụng các thuật toán chuẩn công nghiệp đã được kiểm chứng:
 
-## 🛠️ Kiến trúc & Công nghệ (Tech Stack)
+*   **AES-256-GCM:** Thuật toán mã hóa đối xứng có xác thực (Authenticated Encryption) mạnh mẽ nhất hiện nay, dùng để mã hóa cả khóa DEK và toàn bộ nội dung của Vault.
+*   **Argon2id:** Thuật toán dẫn xuất khóa (Key Derivation Function) chống brute-force và chống phần cứng chuyên dụng (ASIC/GPU), dùng để băm Master Password và câu trả lời bảo mật.
+*   **Shamir's Secret Sharing (GF-256):** Thuật toán chia sẻ bí mật dùng để phân mảnh khóa DEK thành nhiều phần rời rạc (Shares). Không một mảnh vỡ đơn lẻ nào chứa bất kỳ thông tin gì về khóa gốc.
+*   **SecureRandom:** Sinh IVs (Initialization Vectors), Salts và khóa DEK ngẫu nhiên đảm bảo tính không thể dự đoán.
 
-Dự án áp dụng chặt chẽ mô hình **Clean Architecture** và chia làm 2 phân vùng độc lập:
-1.  **Core (Lõi Nghiệp vụ & Mật mã):** Hoàn toàn là Java thuần, không phụ thuộc UI. Dễ dàng Unit Test và tái sử dụng.
-2.  **UI (Giao diện):** Điều khiển bởi JavaFX và liên kết với Core thông qua Dependency Injection.
+## 🚀 Hướng dẫn cài đặt và chạy ứng dụng
 
-*   **Ngôn ngữ:** Java 17+
-*   **UI Framework:** JavaFX
-*   **Quản lý dự án / Build Tool:** Maven
-*   **Xử lý JSON:** Google Gson
-*   **Thư viện Mật mã:** BouncyCastle (hoặc Java Cryptography Architecture - JCA)
+### Yêu cầu hệ thống
+*   **Java JDK 17** trở lên.
+*   **Apache Maven** (để quản lý thư viện và build).
 
----
+### Cách chạy ứng dụng
 
-## 🚀 Hướng dẫn Cài đặt và Chạy ứng dụng
+1.  Clone (hoặc tải) mã nguồn về máy tính.
+2.  Mở Terminal/Command Prompt tại thư mục gốc của dự án (nơi chứa file `pom.xml`).
+3.  Chạy lệnh sau để build và khởi chạy giao diện JavaFX:
 
-### Yêu cầu hệ thống:
-*   Đã cài đặt **JDK 17** (hoặc mới hơn).
-*   Đã cài đặt **Apache Maven**.
-
-### Thực thi:
-Mở Terminal/Command Prompt tại thư mục gốc của dự án và chạy lệnh sau:
-
-`mvn clean compile javafx:run`
-
-*Lưu ý: Trong lần chạy đầu tiên, hệ thống sẽ yêu cầu bạn Khởi tạo Két Sắt (Setup Vault). Ở các lần chạy sau, ứng dụng sẽ tự động phát hiện file `vault.json` trong thư mục người dùng (`~/.passman/`) và hiển thị màn hình Mở khóa (Login).*
-
----
-
-## 📂 Cấu trúc Thư mục Chính
-
-```text
-src/
-├── main/
-│   ├── java/vn/edu/hcmus/passman/
-│   │   ├── core/              # Lõi nghiệp vụ (Không chứa code UI)
-│   │   │   ├── models/        # Cấu trúc dữ liệu (Account, Vault, EncryptedVault)
-│   │   │   ├── security/      # Xử lý mã hóa, Argon2, AES, MemoryWiper
-│   │   │   └── services/      # Logic điều phối (VaultManager, AutoLockService)
-│   │   ├── ui/                # Giao diện người dùng
-│   │   │   └── controllers/   # Các JavaFX Controllers điều khiển thao tác
-│   │   └── MainApp.java       # Entry point khởi chạy ứng dụng
-│   │
-│   └── resources/
-│       └── fxml/              # File thiết kế giao diện (Setup, Login, Dashboard...)
-└── test/                      # Các Unit Test đảm bảo độ tin cậy của thuật toán
+```bash
+mvn clean javafx:run
 ```
 
-⚠️ Khuyến cáo Bảo mật (Disclaimer):
+### Cách đóng gói thành file thực thi (Tùy chọn)
 
-Không có tính năng Khôi phục Mật khẩu: Đúng với nguyên tắc Zero-Knowledge, chúng tôi KHÔNG lưu trữ hay gửi Master Password của bạn đi đâu. Nếu bạn quên Master Password, toàn bộ dữ liệu của bạn sẽ bị khóa vĩnh viễn. Vui lòng ghi nhớ Master Password cẩn thận hoặc lưu trữ an toàn.
+Để đóng gói ứng dụng thành một file `.jar` có thể chạy độc lập (Fat JAR), hãy sử dụng lệnh:
 
-Ứng dụng sử dụng Clipboard của Hệ điều hành để sao chép mật khẩu. Để bảo mật tối đa, người dùng nên tự dọn dẹp Clipboard sau khi sử dụng (paste) xong.
+```bash
+mvn clean package
+```
+File thực thi sẽ nằm trong thư mục `target/`.
+
+## 📂 Kiến trúc dữ liệu
+
+Dữ liệu của bạn được lưu mặc định tại đường dẫn `~/.passman/vault.json` với cấu trúc JSON hoàn toàn bị mã hóa, bao gồm:
+
+*   `vaultMetadata`: Lưu trữ IV dùng để mã hóa dữ liệu kho mật khẩu.
+*   `masterKeyMetadata`: Lưu trữ Salt, IV và khóa DEK đã bị mã hóa bởi Master Password.
+*   `recoveryMetadata`: Lưu trữ các cấu hình của Shamir's Secret Sharing (ngưỡng khôi phục $K$) và các mảnh vỡ DEK đã bị mã hóa bởi các câu trả lời bảo mật.
+*   `ciphertext`: Chuỗi Base64 chứa danh sách toàn bộ các tài khoản của bạn đã được mã hóa siêu an toàn bởi khóa DEK.
+
+## 🤝 Giấy phép
+Dự án được xây dựng phục vụ cho mục đích học tập và phát triển ứng dụng bảo mật.
