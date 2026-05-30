@@ -1,29 +1,27 @@
 package vn.edu.hcmus.passman.core.services;
 
 import com.google.gson.Gson;
-
+import com.codahale.shamir.Scheme;
 import vn.edu.hcmus.passman.core.models.Account;
 import vn.edu.hcmus.passman.core.models.EncryptedVault;
+import vn.edu.hcmus.passman.core.models.QuestionAnswer;
 import vn.edu.hcmus.passman.core.models.Vault;
 import vn.edu.hcmus.passman.core.security.ICryptoManager;
 import vn.edu.hcmus.passman.core.security.MemoryWiper;
 
 import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
-import java.util.Base64;
+import java.security.SecureRandom;
+import java.util.*;
 
 public class VaultManager {
 
     private final ICryptoManager cryptoManager;
     private final IStorageService storageService;
     private final Gson gson;
-    private byte[] sessionKey;
-    private byte[] currentSalt;
-
-    // Bộ nhớ RAM chứa Vault đang được mở (Sẽ được dùng nhiều ở các thao tác CRUD sau này)
+    
+    private byte[] sessionKey; 
     private Vault currentVault;
 
-    // Dependency Injection: Nhận các module từ bên ngoài truyền vào
     public VaultManager(ICryptoManager cryptoManager, IStorageService storageService) {
         this.cryptoManager = cryptoManager;
         this.storageService = storageService;
@@ -31,254 +29,298 @@ public class VaultManager {
         this.currentVault = null;
     }
 
-    /**
-     * Quy trình 1: Khởi tạo Vault mới hoàn toàn
-     * @param masterPassword Mật khẩu gốc do người dùng nhập (char[])
-     */
-    public void initializeVault(char[] masterPassword) throws Exception {
+    public void initializeVault(char[] masterPassword, List<QuestionAnswer> securityQuestions) throws Exception {
         if (masterPassword == null || masterPassword.length == 0) {
             throw new IllegalArgumentException("Master Password không được để trống.");
         }
+        
+        int n = (securityQuestions == null) ? 0 : securityQuestions.size();
+        if (n > 0 && n < 3) {
+            throw new IllegalArgumentException("Nếu sử dụng tính năng khôi phục, cần ít nhất 3 câu hỏi.");
+        }
 
-        byte[] key = null;
-        byte[] plaintextBytes = null;
-        byte[] ciphertext = null;
+        byte[] dek = null;
+        byte[] masterKey = null;
 
         try {
-            // Bước 1: Sinh Salt (16 bytes) và Dẫn xuất Khóa AES (32 bytes) bằng Argon2
-            byte[] salt = cryptoManager.generateSecureRandom(16);
-            key = cryptoManager.deriveKey(masterPassword, salt);
+            dek = cryptoManager.generateSecureRandom(32);
 
-            // Bước 2: Tạo Vault rỗng và chuyển thành chuỗi JSON
+            byte[] masterSalt = cryptoManager.generateSecureRandom(16);
+            masterKey = cryptoManager.deriveKey(masterPassword, masterSalt);
+            byte[] masterIv = cryptoManager.generateSecureRandom(12);
+            byte[] encryptedDekMaster = cryptoManager.encrypt(dek, masterKey, masterIv);
+            
+            EncryptedVault.MasterKeyMetadata mkMeta = new EncryptedVault.MasterKeyMetadata(
+                    Base64.getEncoder().encodeToString(masterSalt),
+                    Base64.getEncoder().encodeToString(masterIv),
+                    Base64.getEncoder().encodeToString(encryptedDekMaster));
+
+            EncryptedVault.RecoveryMetadata recMeta = null;
+
+            if (n >= 3) {
+                int k = (n / 2) + 1; // Nửa số câu hỏi + 1
+                Scheme scheme = new Scheme(new SecureRandom(), n, k);
+                Map<Integer, byte[]> shares = scheme.split(dek);
+                List<EncryptedVault.EncryptedShare> encryptedSharesList = new ArrayList<>();
+                
+                for (int i = 0; i < n; i++) {
+                    QuestionAnswer qa = securityQuestions.get(i);
+                    int shareIndex = i + 1;
+                    byte[] shareBytes = shares.get(shareIndex);
+                    
+                    byte[] shareSalt = cryptoManager.generateSecureRandom(16);
+                    byte[] shareKey = cryptoManager.deriveKey(qa.getAnswer(), shareSalt); 
+                    byte[] shareIv = cryptoManager.generateSecureRandom(12);
+                    byte[] encryptedShareBytes = cryptoManager.encrypt(shareBytes, shareKey, shareIv);
+                    
+                    encryptedSharesList.add(new EncryptedVault.EncryptedShare(
+                        qa.getQuestion(), shareIndex,
+                        Base64.getEncoder().encodeToString(shareSalt),
+                        Base64.getEncoder().encodeToString(shareIv),
+                        Base64.getEncoder().encodeToString(encryptedShareBytes)
+                    ));
+                    
+                    MemoryWiper.clear(shareKey);
+                    MemoryWiper.clear(shareBytes);
+                }
+                recMeta = new EncryptedVault.RecoveryMetadata(k, encryptedSharesList);
+            }
+
             this.currentVault = new Vault();
             String vaultJson = gson.toJson(this.currentVault);
-            plaintextBytes = vaultJson.getBytes(StandardCharsets.UTF_8);
+            byte[] vaultIv = cryptoManager.generateSecureRandom(12);
+            byte[] ciphertext = cryptoManager.encrypt(vaultJson.getBytes(StandardCharsets.UTF_8), dek, vaultIv);
+            
+            EncryptedVault.VaultMetadata vaultMeta = new EncryptedVault.VaultMetadata(Base64.getEncoder().encodeToString(vaultIv));
+            
+            EncryptedVault encryptedVault = new EncryptedVault(vaultMeta, mkMeta, recMeta, Base64.getEncoder().encodeToString(ciphertext));
 
-            // Bước 3: Sinh IV (12 bytes) và Mã hóa Vault JSON bằng AES-256-GCM
-            byte[] iv = cryptoManager.generateSecureRandom(12);
-            ciphertext = cryptoManager.encrypt(plaintextBytes, key, iv);
+            storageService.saveVault(gson.toJson(encryptedVault));
 
-            // Bước 4: Đóng gói dữ liệu để chuẩn bị lưu file
-            // LƯU Ý: Phải chuyển byte[] sang Base64 thì mới lưu dạng text (JSON) được an toàn
-            String saltBase64 = Base64.getEncoder().encodeToString(salt);
-            String ivBase64 = Base64.getEncoder().encodeToString(iv);
-            String ciphertextBase64 = Base64.getEncoder().encodeToString(ciphertext);
-
-            EncryptedVault.CryptoMetadata metadata = new EncryptedVault.CryptoMetadata(saltBase64, ivBase64);
-            EncryptedVault encryptedVault = new EncryptedVault(metadata, ciphertextBase64);
-
-            // Bước 5: Serialize object EncryptedVault thành JSON và lưu xuống bộ nhớ (IStorageService)
-            String finalJsonToSave = gson.toJson(encryptedVault);
-            storageService.saveVault(finalJsonToSave);
+            this.sessionKey = Arrays.copyOf(dek, dek.length);
 
         } finally {
-            // ĐIỂM CHỐT BẢO MẬT BỘ NHỚ:
-            // Dù quá trình khởi tạo thành công hay bị lỗi (crash giữa chừng),
-            // khối finally luôn được chạy để dọn dẹp các byte nhạy cảm khỏi RAM.
-            MemoryWiper.clear(key);
-            MemoryWiper.clear(plaintextBytes);
-            
-            // Xóa Master Password khỏi RAM (UI truyền xuống, Core dùng xong xóa ngay)
-            MemoryWiper.clear(masterPassword); 
+            MemoryWiper.clear(dek);
+            MemoryWiper.clear(masterKey);
+            MemoryWiper.clear(masterPassword);
+            if (securityQuestions != null) {
+                for(QuestionAnswer qa : securityQuestions) {
+                    MemoryWiper.clear(qa.getAnswer());
+                }
+            }
         }
     }
     
-    /**
-     * Quy trình 2: Mở khóa Vault đã có sẵn
-     * @param masterPassword Mật khẩu gốc do người dùng nhập để mở khóa
-     */
     public void unlockVault(char[] masterPassword) throws Exception {
         if (masterPassword == null || masterPassword.length == 0) {
             throw new IllegalArgumentException("Vui lòng nhập Master Password.");
         }
-
-        // Bước 1: Kiểm tra xem file vault.json có tồn tại không
         if (!storageService.vaultExists()) {
             throw new Exception("Không tìm thấy dữ liệu Vault. Vui lòng khởi tạo Vault trước.");
         }
 
-        byte[] key = null;
+        byte[] masterKey = null;
+        byte[] dek = null;
         byte[] plaintextBytes = null;
 
         try {
-            // Bước 2: Đọc chuỗi JSON từ ổ cứng lên
             String encryptedJson = storageService.loadVault();
-
-            // Bước 3: Deserialize JSON thành đối tượng EncryptedVault
             EncryptedVault encryptedVault = gson.fromJson(encryptedJson, EncryptedVault.class);
-            EncryptedVault.CryptoMetadata metadata = encryptedVault.getCrypto();
+            EncryptedVault.MasterKeyMetadata mkMeta = encryptedVault.getMasterKeyMetadata();
+            EncryptedVault.VaultMetadata vaultMeta = encryptedVault.getVaultMetadata();
 
-            // Bước 4: Giải mã Base64 để lấy lại mảng byte gốc của Salt, IV và Ciphertext
-            byte[] salt = Base64.getDecoder().decode(metadata.getSalt());
-            byte[] iv = Base64.getDecoder().decode(metadata.getIv());
+            byte[] masterSalt = Base64.getDecoder().decode(mkMeta.getSalt());
+            byte[] masterIv = Base64.getDecoder().decode(mkMeta.getIv());
+            byte[] encryptedDekMaster = Base64.getDecoder().decode(mkMeta.getEncryptedDek());
+
+            masterKey = cryptoManager.deriveKey(masterPassword, masterSalt);
+            dek = cryptoManager.decrypt(encryptedDekMaster, masterKey, masterIv);
+
+            byte[] vaultIv = Base64.getDecoder().decode(vaultMeta.getIv());
             byte[] ciphertext = Base64.getDecoder().decode(encryptedVault.getCiphertext());
-
-            // Bước 5: Chạy Argon2id cùng với Salt (từ file) để sinh ra Encryption Key
-            key = cryptoManager.deriveKey(masterPassword, salt);
-
-            // Bước 6: Đưa vào AES-256-GCM để giải mã. 
-            // NẾU SAI MẬT KHẨU HOẶC FILE BỊ SỬA: Hàm decrypt sẽ ném AEADBadTagException ngay lập tức!
-            plaintextBytes = cryptoManager.decrypt(ciphertext, key, iv);
-
-            // Bước 7: Quá trình giải mã thành công -> Parse JSON trả về RAM
+            
+            plaintextBytes = cryptoManager.decrypt(ciphertext, dek, vaultIv);
             String vaultJson = new String(plaintextBytes, StandardCharsets.UTF_8);
             this.currentVault = gson.fromJson(vaultJson, Vault.class);
 
-            // Bước 8: LƯU SESSION KEY & SALT ĐỂ DÙNG KHI LƯU FILE
-            this.sessionKey = Arrays.copyOf(key, key.length);
-            this.currentSalt = Arrays.copyOf(salt, salt.length);
+            this.sessionKey = Arrays.copyOf(dek, dek.length);
 
         } catch (Exception e) {
-            // Bắt mọi lỗi (bao gồm lỗi do Authentication Tag) và ném ra thông báo chung 
-            // theo nguyên tắc bảo mật: Không tiết lộ cho user biết chính xác lỗi do sai pass hay hỏng file.
             throw new Exception("Mở khóa thất bại! Mật khẩu không đúng hoặc tệp dữ liệu đã bị can thiệp.", e);
         } finally {
-            // ĐIỂM CHỐT BẢO MẬT BỘ NHỚ:
-            // Tuyệt đối không để Key giải mã và bản rõ (plaintext) nằm lại trong RAM
-            MemoryWiper.clear(key);
+            MemoryWiper.clear(masterKey);
+            MemoryWiper.clear(dek);
             MemoryWiper.clear(plaintextBytes);
-            
-            // Xóa Master Password do UI truyền xuống
             MemoryWiper.clear(masterPassword);
         }
     }
 
-    /**
-     * [THÊM MỚI] Lưu dữ liệu từ RAM xuống ổ cứng (Serialize & Safe Write)
-     */
+    public void recoverVault(List<QuestionAnswer> recoveryAnswers, char[] newMasterPassword) throws Exception {
+        if (!storageService.vaultExists()) {
+            throw new Exception("Không tìm thấy dữ liệu Vault.");
+        }
+
+        String encryptedJson = storageService.loadVault();
+        EncryptedVault encryptedVault = gson.fromJson(encryptedJson, EncryptedVault.class);
+        EncryptedVault.RecoveryMetadata recMeta = encryptedVault.getRecoveryMetadata();
+        
+        if (recMeta == null) {
+            throw new Exception("Vault này không được thiết lập tính năng khôi phục mật khẩu.");
+        }
+
+        int n = recMeta.getShares().size();
+        int k = recMeta.getThreshold();
+
+        Map<Integer, byte[]> recoveredShares = new HashMap<>();
+
+        try {
+            for (QuestionAnswer qa : recoveryAnswers) {
+                EncryptedVault.EncryptedShare targetShare = null;
+                for (EncryptedVault.EncryptedShare share : recMeta.getShares()) {
+                    if (share.getQuestionText().equals(qa.getQuestion())) {
+                        targetShare = share;
+                        break;
+                    }
+                }
+                
+                if (targetShare == null) continue;
+
+                byte[] shareSalt = Base64.getDecoder().decode(targetShare.getSalt());
+                byte[] shareIv = Base64.getDecoder().decode(targetShare.getIv());
+                byte[] encryptedShareBytes = Base64.getDecoder().decode(targetShare.getEncryptedShareBytes());
+                
+                byte[] shareKey = null;
+                byte[] sharePlaintext = null;
+                try {
+                    shareKey = cryptoManager.deriveKey(qa.getAnswer(), shareSalt);
+                    sharePlaintext = cryptoManager.decrypt(encryptedShareBytes, shareKey, shareIv);
+                    recoveredShares.put(targetShare.getShareIndex(), sharePlaintext);
+                } catch (Exception ignored) {
+                } finally {
+                    MemoryWiper.clear(shareKey);
+                }
+            }
+
+            if (recoveredShares.size() < k) {
+                throw new Exception("Khôi phục thất bại. Cần ít nhất " + k + " câu trả lời đúng (bạn đúng " + recoveredShares.size() + "/" + k + ").");
+            }
+
+            Scheme scheme = new Scheme(new SecureRandom(), n, k);
+            byte[] dek = scheme.join(recoveredShares);
+
+            byte[] masterSalt = cryptoManager.generateSecureRandom(16);
+            byte[] masterKey = cryptoManager.deriveKey(newMasterPassword, masterSalt);
+            byte[] masterIv = cryptoManager.generateSecureRandom(12);
+            byte[] encryptedDekMaster = cryptoManager.encrypt(dek, masterKey, masterIv);
+            
+            EncryptedVault.MasterKeyMetadata mkMeta = new EncryptedVault.MasterKeyMetadata(
+                    Base64.getEncoder().encodeToString(masterSalt),
+                    Base64.getEncoder().encodeToString(masterIv),
+                    Base64.getEncoder().encodeToString(encryptedDekMaster));
+
+            EncryptedVault updatedVault = new EncryptedVault(
+                encryptedVault.getVaultMetadata(), 
+                mkMeta, 
+                encryptedVault.getRecoveryMetadata(), 
+                encryptedVault.getCiphertext()
+            );
+            
+            storageService.saveVault(gson.toJson(updatedVault));
+            
+            MemoryWiper.clear(dek);
+            MemoryWiper.clear(masterKey);
+
+        } finally {
+            for (byte[] shareBytes : recoveredShares.values()) {
+                MemoryWiper.clear(shareBytes);
+            }
+            for (QuestionAnswer qa : recoveryAnswers) {
+                MemoryWiper.clear(qa.getAnswer());
+            }
+            MemoryWiper.clear(newMasterPassword);
+        }
+    }
+
     public void saveChanges() throws Exception {
         ensureVaultLoaded();
 
-        if (this.sessionKey == null || this.currentSalt == null) {
-            throw new Exception("Lỗi hệ thống: Không tìm thấy Session Key để mã hóa.");
-        }
-
         try {
-            // 1. Object (RAM) -> JSON (Plaintext)
             String vaultJson = gson.toJson(this.currentVault);
             byte[] plaintextBytes = vaultJson.getBytes(StandardCharsets.UTF_8);
 
-            // 2. Sinh IV hoàn toàn MỚI cho lần mã hóa này (KHÔNG BAO GIỜ DÙNG LẠI IV CŨ)
-            byte[] newIv = cryptoManager.generateSecureRandom(12);
+            byte[] newVaultIv = cryptoManager.generateSecureRandom(12);
+            byte[] ciphertext = cryptoManager.encrypt(plaintextBytes, this.sessionKey, newVaultIv);
+            
+            String encryptedJson = storageService.loadVault();
+            EncryptedVault oldVault = gson.fromJson(encryptedJson, EncryptedVault.class);
 
-            // 3. Mã hóa dữ liệu bằng Session Key đang có trong RAM
-            byte[] ciphertext = cryptoManager.encrypt(plaintextBytes, this.sessionKey, newIv);
+            EncryptedVault.VaultMetadata vaultMeta = new EncryptedVault.VaultMetadata(Base64.getEncoder().encodeToString(newVaultIv));
+            
+            EncryptedVault encryptedVault = new EncryptedVault(
+                vaultMeta, 
+                oldVault.getMasterKeyMetadata(), 
+                oldVault.getRecoveryMetadata(), 
+                Base64.getEncoder().encodeToString(ciphertext)
+            );
 
-            // 4. Encode sang Base64 và tạo đối tượng EncryptedVault
-            String saltBase64 = Base64.getEncoder().encodeToString(this.currentSalt);
-            String ivBase64 = Base64.getEncoder().encodeToString(newIv);
-            String ciphertextBase64 = Base64.getEncoder().encodeToString(ciphertext);
-
-            EncryptedVault.CryptoMetadata metadata = new EncryptedVault.CryptoMetadata(saltBase64, ivBase64);
-            EncryptedVault encryptedVault = new EncryptedVault(metadata, ciphertextBase64);
-
-            // 5. Serialize EncryptedVault -> JSON String và gọi Safe Write
-            String finalJsonToSave = gson.toJson(encryptedVault);
-            storageService.saveVault(finalJsonToSave);
-
-            // Dọn RAM bản rõ
+            storageService.saveVault(gson.toJson(encryptedVault));
             MemoryWiper.clear(plaintextBytes);
-
         } catch (Exception e) {
-            throw new Exception("Quá trình mã hóa và lưu file thất bại: " + e.getMessage(), e);
+            throw new Exception("Lưu thay đổi thất bại: " + e.getMessage(), e);
         }
     }
 
-    /**
-     * [THÊM MỚI] Chủ động khóa Vault và dọn dẹp TOÀN BỘ RAM
-     */
     public void lockVault() {
-        // 1. Xóa Session Key
         MemoryWiper.clear(this.sessionKey);
         this.sessionKey = null;
-        
-        // 2. Xóa Salt
-        MemoryWiper.clear(this.currentSalt);
-        this.currentSalt = null;
 
-        // 3. Xóa dữ liệu từng tài khoản trong Vault
         if (this.currentVault != null && this.currentVault.getAccounts() != null) {
-            for (vn.edu.hcmus.passman.core.models.Account acc : this.currentVault.getAccounts()) {
+            for (Account acc : this.currentVault.getAccounts()) {
                 MemoryWiper.clear(acc.getPassword());
             }
         }
-        
-        // 4. Hủy object Vault
         this.currentVault = null;
     }
 
-    // =====================================================================
-    // CÁC THAO TÁC CRUD TRONG RAM
-    // =====================================================================
-
-    /**
-     * Hàm kiểm tra an toàn: Đảm bảo Vault đã được mở trước khi thao tác
-     */
     private void ensureVaultLoaded() throws Exception {
-        if (this.currentVault == null) {
+        if (this.currentVault == null || this.sessionKey == null) {
             throw new Exception("Lỗi truy cập: Vault chưa được mở (Locked).");
         }
     }
 
-    /**
-     * [READ] Lấy danh sách toàn bộ tài khoản
-     */
     public java.util.List<Account> getAllAccounts() throws Exception {
         ensureVaultLoaded();
         return this.currentVault.getAccounts();
     }
 
-    /**
-     * [CREATE] Thêm một tài khoản mới vào Vault
-     * @param password Mật khẩu được truyền dưới dạng char[] từ UI
-     */
     public void addAccount(String service, String username, char[] password, String url, String note) throws Exception {
         ensureVaultLoaded();
-        
         Account newAccount = new Account(service, username, password, url, note);
         this.currentVault.addAccount(newAccount);
-        
-        // Lưu ý: Dọn dẹp mảng char[] đầu vào từ UI ngay sau khi copy vào Account object
         MemoryWiper.clear(password);
     }
 
-    /**
-     * [UPDATE] Cập nhật thông tin tài khoản hiện có
-     */
     public void updateAccount(String id, String newService, String newUsername, char[] newPassword, String newUrl, String newNote) throws Exception {
         ensureVaultLoaded();
-
         for (Account acc : this.currentVault.getAccounts()) {
             if (acc.getId().equals(id)) {
-                // Nếu người dùng có nhập mật khẩu mới
                 if (newPassword != null && newPassword.length > 0) {
-                    // ĐIỂM CHỐT BẢO MẬT: Phải xóa trắng mật khẩu CŨ trong RAM trước khi ghi đè
                     MemoryWiper.clear(acc.getPassword());
                     acc.setPassword(newPassword);
-                    
-                    // Dọn dẹp mảng đầu vào từ UI
                     MemoryWiper.clear(newPassword);
                 }
-                
-                // Cập nhật các trường thông thường (không nhạy cảm) bằng reflection hoặc setter
-                // Vì ở Account.java ta chưa viết đủ setter, bạn có thể bổ sung các setter cơ bản bên class Account.
-                // Ví dụ (cần thêm setter trong Account.java):
-                // acc.setService(newService);
-                // acc.setUsername(newUsername);
-                // acc.setUrl(newUrl);
-                // acc.setNote(newNote);
+                acc.setService(newService);
+                acc.setUsername(newUsername);
+                acc.setUrl(newUrl);
+                acc.setNote(newNote);
                 return;
             }
         }
         throw new Exception("Không tìm thấy tài khoản với ID: " + id);
     }
 
-    /**
-     * [DELETE] Xóa một tài khoản khỏi Vault
-     */
     public void deleteAccount(String id) throws Exception {
         ensureVaultLoaded();
-
         Account targetAccount = null;
         for (Account acc : this.currentVault.getAccounts()) {
             if (acc.getId().equals(id)) {
@@ -286,26 +328,45 @@ public class VaultManager {
                 break;
             }
         }
-
         if (targetAccount != null) {
-            // ĐIỂM CHỐT BẢO MẬT BỘ NHỚ: 
-            // Nếu chỉ gọi removeAccount(), object Account vẫn trôi nổi trong RAM chờ GC dọn dẹp.
-            // Phải thủ công ghi đè toàn bộ số 0 lên mảng char[] chứa mật khẩu trước khi gỡ tham chiếu.
             MemoryWiper.clear(targetAccount.getPassword());
-            
-            // Sau khi đã xóa dữ liệu nhạy cảm, mới gỡ bỏ object khỏi danh sách
             this.currentVault.removeAccount(id);
         } else {
             throw new Exception("Xóa thất bại: Không tìm thấy tài khoản.");
         }
     }
 
-    // Các hàm phụ trợ
     public boolean isVaultLoaded() {
         return currentVault != null;
     }
 
     public Vault getCurrentVault() {
         return currentVault;
+    }
+    
+    public int getRecoveryThreshold() throws Exception {
+        if (!storageService.vaultExists()) throw new Exception("Vault chưa được tạo.");
+        String encryptedJson = storageService.loadVault();
+        EncryptedVault encryptedVault = gson.fromJson(encryptedJson, EncryptedVault.class);
+        if (encryptedVault.getRecoveryMetadata() == null) {
+            throw new Exception("Vault này không cài đặt tính năng khôi phục.");
+        }
+        return encryptedVault.getRecoveryMetadata().getThreshold();
+    }
+
+    public List<String> getRecoveryQuestions() throws Exception {
+        if (!storageService.vaultExists()) {
+            throw new Exception("Vault chưa được tạo.");
+        }
+        String encryptedJson = storageService.loadVault();
+        EncryptedVault encryptedVault = gson.fromJson(encryptedJson, EncryptedVault.class);
+        if (encryptedVault.getRecoveryMetadata() == null) {
+            throw new Exception("Vault này không cài đặt tính năng khôi phục.");
+        }
+        List<String> questions = new ArrayList<>();
+        for (EncryptedVault.EncryptedShare share : encryptedVault.getRecoveryMetadata().getShares()) {
+            questions.add(share.getQuestionText());
+        }
+        return questions;
     }
 }

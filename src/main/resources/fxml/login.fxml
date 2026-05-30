@@ -33,5 +33,7 @@
 
    <!-- Nút Đăng nhập -->
    <Button fx:id="btnLogin" mnemonicParsing="false" onAction="#handleLogin" prefHeight="35.0" prefWidth="150.0" text="Mở khóa" />
+   
+   <Button text="Quên mật khẩu?" style="-fx-background-color: transparent; -fx-text-fill: #0066cc; -fx-underline: true; -fx-cursor: hand;" onAction="#handleForgotPassword" />
 
 </VBox>
